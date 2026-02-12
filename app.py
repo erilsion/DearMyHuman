@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 
 import streamlit as st
-from PIL import Image
+from PIL import Image, ImageOps
 
 from google import genai
 from google.genai import types
@@ -328,7 +328,9 @@ if submitted:
         st.stop()
 
     # 사용자 이미지 로드 + bytes 저장(대체 표시용)
-    user_image = Image.open(uploaded).convert("RGB")
+    user_image = ImageOps.exif_transpose(Image.open(uploaded)).convert("RGB")
+    max_side = 1024
+    user_image.thumbnail((max_side, max_side))
     buf = io.BytesIO()
     user_image.save(buf, format="PNG")
     user_image_bytes = buf.getvalue()
