@@ -9,6 +9,7 @@ from typing import Optional, Tuple
 import streamlit as st
 from PIL import Image, ImageOps
 
+ENABLE_IMAGE = False
 if ENABLE_IMAGE:
     import vertexai
     from vertexai.preview.vision_models import ImageGenerationModel, Image as VertexImage
@@ -18,7 +19,6 @@ from google.genai import types
 from google.genai.errors import ClientError
 
 DEFAULT_IMAGE_PATH = "images/default_pet_image.png"
-ENABLE_IMAGE = False
 
 # =========================================================
 # Streamlit Config
