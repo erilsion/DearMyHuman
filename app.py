@@ -9,14 +9,16 @@ from typing import Optional, Tuple
 import streamlit as st
 from PIL import Image, ImageOps
 
-import vertexai
-from vertexai.preview.vision_models import ImageGenerationModel, Image as VertexImage
+if ENABLE_IMAGE:
+    import vertexai
+    from vertexai.preview.vision_models import ImageGenerationModel, Image as VertexImage
 
 from google import genai
 from google.genai import types
 from google.genai.errors import ClientError
 
 DEFAULT_IMAGE_PATH = "images/default_pet_image.png"
+ENABLE_IMAGE = False
 
 # =========================================================
 # Streamlit Config
@@ -528,7 +530,7 @@ if should_generate:
         user_image_bytes = buf.getvalue()
         st.image(user_image, caption="업로드한 사진", width="stretch")
     else:
-        st.info("사진 없이도 편지는 만들 수 있어요🐾 (그림 생성은 사진이 있을 때만 가능해요!)")
+        st.info("지금은 편지만 제공 중이에요🐾 (이미지 기능은 추후 추가 예정!)")
 
     if species_choice == "선택 안 함":
         species_final = ""
@@ -593,7 +595,7 @@ if should_generate:
             memory_cues = ""
 
         # 2) 이미지 생성(실패해도 편지는 유지)
-        if user_image_bytes:
+        if ENABLE_IMAGE and user_image_bytes:
             try:
                 pet_desc = analyze_pet_photo_to_visual_desc(user_image_bytes)
                 img_prompt = build_image_prompt(
