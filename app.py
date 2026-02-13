@@ -630,13 +630,13 @@ if st.session_state.ready:
     st.subheader("📮 반려동물이 편지를 가져왔어요!")
     col_r1, col_r2 = st.columns([1, 1])
     with col_r1:
-        if st.button("🔄 지금과 비슷한 이미지와 편지로 다시 만들고 싶어요.", width="stretch"):
+        if st.button("🔄 (준비중)지금과 비슷한 이미지와 편지로 다시 만들고 싶어요.", width="stretch"):
             st.session_state.generation_seed += 1
             st.session_state.regenerate_requested = True
             st.rerun()
 
     with col_r2:
-        if st.button("🎲 느낌이 아예 다른 이미지와 편지를 받아보고 싶어요!", width="stretch"):
+        if st.button("🎲 (준비중)느낌이 아예 다른 이미지와 편지를 받아보고 싶어요!", width="stretch"):
             st.session_state.generation_seed += random.randint(5, 30)
             st.session_state.regenerate_requested = True
             st.rerun()
