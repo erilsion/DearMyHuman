@@ -13,6 +13,8 @@ from google import genai
 from google.genai import types
 from google.genai.errors import ClientError
 
+DEFAULT_IMAGE_PATH = "images/default_pet_image.png"
+
 # =========================================================
 # Streamlit Config
 # =========================================================
@@ -120,7 +122,7 @@ class PetInputs:
 def _safe_strip(x: Optional[str]) -> str:
     return (x or "").strip()
 
-def make_request_key(inputs: PetInputs, image_bytes: bytes) -> str:
+def make_request_key(inputs: PetInputs, image_bytes: bytes = b"") -> str:
     """
     같은 입력이면 같은 결과를 재사용하기 위한 키.
     이미지 bytes 포함 -> 사진까지 같을 때만 동일 처리.
@@ -189,6 +191,13 @@ Style: soft illustration, clean composition, friendly lighting.
 Details: reflect "{personality}" vibe and "{age}" age impression subtly.
 Rules: NO text, NO letters readable, NO watermark, NO logos.
 """.strip()
+
+def load_default_image_bytes(path: str) -> Optional[bytes]:
+    try:
+        with open(path, "rb") as f:
+            return f.read()
+    except Exception:
+        return None
 
 def clamp_text(text: str, limit: int = 600) -> str:
     text = (text or "").strip()
@@ -297,7 +306,7 @@ def generate_image_with_fallback(image_prompt: str, user_image_bytes: bytes) -> 
 with st.form("pet_form"):
     st.subheader("반려동물 정보 입력")
 
-    uploaded = st.file_uploader("사진 첨부 (필수)", type=["png", "jpg", "jpeg"])
+    uploaded = st.file_uploader("사진 첨부 (선택)", type=["png", "jpg", "jpeg"])
     name = st.text_input("이름 (필수)", placeholder="예: 해피")
     species_choice = st.selectbox(
         "반려동물 종류 (선택)",
@@ -323,19 +332,23 @@ if cleared:
 
 if submitted:
     # 입력 검증
-    if not uploaded or not _safe_strip(name):
-        st.warning("사진과 이름은 꼭 넣어주세요! (나머지는 비워도 괜찮아요!)")
+    if not _safe_strip(name):
+        st.warning("이름은 꼭 넣어주세요! (나머지는 비워도 괜찮아요!)")
         st.stop()
 
     # 사용자 이미지 로드 + bytes 저장(대체 표시용)
-    user_image = ImageOps.exif_transpose(Image.open(uploaded)).convert("RGB")
-    max_side = 1024
-    user_image.thumbnail((max_side, max_side))
-    buf = io.BytesIO()
-    user_image.save(buf, format="PNG")
-    user_image_bytes = buf.getvalue()
+    user_image_bytes = b""  # ✅ 사진 없을 수도 있으니 기본값
+    if uploaded is not None:
+        user_image = ImageOps.exif_transpose(Image.open(uploaded)).convert("RGB")
+        max_side = 1024
+        user_image.thumbnail((max_side, max_side))
+        buf = io.BytesIO()
+        user_image.save(buf, format="PNG")
+        user_image_bytes = buf.getvalue()
 
-    st.image(user_image, caption="업로드한 사진", use_container_width=True)
+        st.image(user_image, caption="업로드한 사진", use_container_width=True)
+    else:
+        st.info("사진 없이도 편지를 만들 수 있어요 🐾 (그림 기능은 사진이 있을 때만 가능해요)")
 
     # 종(반려동물 종류) 최종 문자열 결정
     if species_choice == "선택 안 함":
@@ -397,18 +410,24 @@ if st.session_state.ready:
     if st.session_state.generated_image_bytes:
         st.image(st.session_state.generated_image_bytes, use_container_width=True)
     else:
-        st.info("지금은 편지를 먼저 가져왔어요. (그림은 선택하면 바로 그려줄게요 🐾)")
+        st.info("우선 편지를 먼저 가져왔어요. (그림은 선택하면 바로 그려줄게요. 🐾)")
         if st.session_state.user_image_bytes:
             st.image(
                 st.session_state.user_image_bytes,
-                caption="대신, 너의 반려동물 사진을 보여줄게요",
+                caption="대신, 제 사진을 보여줄게요!",
                 use_container_width=True,
             )
+        else:
+            default_bytes = load_default_image_bytes(DEFAULT_IMAGE_PATH)
+        if default_bytes:
+            st.image(default_bytes, caption="멍멍! 제가 편지를 배달하러 왔어요. 🐾", use_container_width=True)
+        else:
+            st.info("기본 이미지 파일이 없어서 표시할 수 없어요. images/default_pet_image.png 경로를 확인해주세요!")
 
         # 이미지 생성은 선택 버튼으로만!
         if st.button("🖼️ 그림도 같이 받을래요 (선택)", use_container_width=True):
             if not st.session_state.last_inputs or not st.session_state.user_image_bytes:
-                st.warning("입력 정보가 없어서 그림을 만들 수 없어요. 다시 한 번 제출해줘!")
+                st.warning("입력 정보가 없어서 그림을 만들 수 없어요. 다시 한 번 제출해주세요!")
                 st.stop()
 
             with st.spinner(f"{pet_name}: 그림을 그리는 중이에요..."):
