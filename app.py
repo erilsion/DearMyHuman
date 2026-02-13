@@ -204,18 +204,63 @@ def analyze_pet_photo_to_visual_desc(user_image_bytes: bytes) -> str:
     if not user_image_bytes:
         return ""
 
-    prompt = """
-Look at the pet photo and output a short visual description in English, 1~3 sentences max.
-Focus on: species guess (safe), fur/feather color, pattern, body size, ear shape, face expression, pose.
-Avoid exact breed if unsure. Return only the description.
+    vision_prompt = """
+You are extracting visual facts from a pet photo for identity consistency in illustration.
+
+CRITICAL RULES:
+- Describe ONLY what is clearly visible in the image.
+- Do NOT guess, assume, infer, or embellish.
+- If a detail is unclear or not visible, use null.
+- Do NOT mention breed unless it is unmistakably obvious.
+- Do NOT use subjective or emotional language.
+- Do NOT write full sentences except where specified.
+- Return ONLY valid JSON. No markdown. No commentary.
+
+Think like a visual inspector, not a storyteller.
+
+JSON schema (must match exactly):
+
+{
+  "species_visible": "dog|cat|rabbit|bird|reptile|rodent|other|unknown",
+  "size_visible": "very_small|small|medium|large|unknown",
+  "coat_or_feather": {
+    "primary_color": "...",
+    "secondary_color": "...",
+    "pattern": "solid|bicolor|tricolor|spotted|striped|patchy|unknown",
+    "texture": "short|medium|long|wiry|curly|hairless|unknown"
+  },
+  "face": {
+    "face_shape": "round|oval|long|flat|unknown",
+    "snout_length": "short|medium|long|unknown",
+    "eye_shape": "round|almond|unknown",
+    "eye_color": "...",
+    "nose_color": "...",
+    "distinctive_markings": ["..."]
+  },
+  "ears": {
+    "position": "upright|floppy|semi-floppy|unknown",
+    "size_relative": "small|medium|large|unknown"
+  },
+  "tail": {
+    "length": "short|medium|long|unknown",
+    "shape": "straight|curled|unknown"
+  },
+  "pose": {
+    "body_position": "standing|sitting|lying|unknown",
+    "head_direction": "forward|left|right|unknown"
+  }
+}
 """.strip()
 
     def _do():
         resp = client.models.generate_content(
             model=VISION_MODEL,
             contents=[
-                prompt,
-                types.Part.from_bytes(data=user_image_bytes, mime_type="image/png"),
+                vision_prompt,
+                types.Part.from_bytes(
+                    data=user_image_bytes,
+                    mime_type="image/png"
+                ),
             ],
         )
         return (resp.text or "").strip()
@@ -227,6 +272,7 @@ Avoid exact breed if unsure. Return only the description.
         except Exception:
             return ""
 
+
 def build_image_prompt(
     inputs: PetInputs,
     pet_visual_desc: str = "",
@@ -235,25 +281,46 @@ def build_image_prompt(
 ) -> str:
     species = _safe_strip(inputs.species)
     visual = pet_visual_desc.strip()
-    visual_line = f"Pet appearance reference: {visual}\n" if visual else ""
+    visual_line = (
+        "Use the reference photo as the PRIMARY source of truth.\n"
+        "The structured visual traits below are STRICT constraints for identity consistency.\n"
+        "Do NOT override the photo or these traits.\n"
+        f"Pet appearance reference:\n{visual}\n"
+    ) if visual else ""
     species_hint = f'The pet is a "{species}".' if species else "The pet is a household pet."
+
+    background_block = """
+Background (must not be plain):
+- Add a soft watercolor environment wash, NOT a flat solid color background.
+- Include 1–2 simple recognizable elements related to delivery: a small mailbox, a doorstep/porch, or a cozy home interior silhouette.
+- Keep it low-detail and pastel so the pet remains the focus.
+""".strip()
 
     memory = (memory_cues or "").strip()
     memory_block = ""
     if memory:
         memory_block = f"""
-Background (memory layer):
-Behind the pet, blend soft, semi-transparent watercolor-like memory fragments into ONE unified background atmosphere.
-These are subtle recollections, not separate scenes.
-{memory}
+    Background vignettes (must be visible):
+    Place THREE small, separate daily-life vignettes BEHIND the pet.
+    They should look like small, simple watercolor vignettes (no frames, no panels).
+    Each vignette corresponds to one bullet below.
 
-Hard rules:
-- Do NOT create multiple panels, frames, or distinct scenes.
-- Do NOT add readable text anywhere.
-""".strip()
+    Layout rules:
+    - Keep the pet centered and in the foreground.
+    - Put the three vignettes around the pet (left / right / upper).
+    - Vignettes are smaller and slightly faded so the pet remains the focus.
+    - Do NOT merge them into one abstract wash; they must be distinguishable as three mini scenes.
+
+    Vignette list:
+    {memory}
+
+    Hard rules:
+    - Do NOT add readable text anywhere.
+    - No watermark, no logo.
+    """.strip()
 
     return f"""
-Create a single warm illustration.
+Create a single, cute illustration (not photo-realistic).
 {species_hint}
 {visual_line}
 
@@ -261,6 +328,16 @@ Scene:
 The pet "{inputs.name}" is a mail carrier,
 wearing a tiny postman uniform and hat,
 carrying a letter in its mouth as if delivering it to the owner.
+The uniform is adapted to the animal body (harness-like, cape-like), not human clothing.
+
+Anatomy rules:
+- The pet must follow natural anatomy for its species.
+- Do NOT add human arms, hands, or humanoid body parts.
+- Do NOT add extra limbs beyond what the animal naturally has.
+- The pet remains fully animal-like (not humanoid or bipedal).
+- The letter is held in the mouth or beak (not hands).
+
+{background_block}
 
 {memory_block}
 
@@ -270,7 +347,8 @@ hand-painted watercolor illustration,
 storybook / children's book style,
 warm pastel color palette,
 soft brush strokes and gentle textures,
-clean white or very light background,
+very light watercolor wash background with simple environment hints (not a flat solid color),
+The three background vignettes should be simpler and lighter than the main pet,
 soft outlines, no harsh ink lines.
 Lighting: soft natural light, gentle shadows.
 Rules: NO readable text, NO watermark, NO logo.
@@ -300,19 +378,26 @@ def build_memory_triptych(inputs: PetInputs, letter_text: str, seed: int = 0) ->
     letter_text = (letter_text or "").strip()
 
     prompt = f"""
-You create background memory cues for a single illustration.
-Return EXACTLY 3 bullet lines in English (start each line with "- ").
-Rules:
-- No readable text, no quotes, no signage.
-- Memory cues must be subtle, symbolic, watercolor-like, not literal scenes.
-- Keep them warm and hopeful (no dark, scary, distressing).
-- Do NOT make multiple panels; these will be blended into ONE background.
-Inputs:
-- Owner actions: {actions}
-- Worries: {worries}
-- Letter text (for mood only): {letter_text}
-Variation seed: {seed}
-""".strip()
+    You create 3 background vignette ideas for a single illustration.
+    Return EXACTLY 3 bullet lines in English (each line starts with "- ").
+
+    Goal:
+    - Each bullet MUST describe one small, simple daily-life watercolor vignette.
+    - The vignettes will appear BEHIND the pet as 3 separate small mini scenes (no frames).
+    - Keep them friendly, wholesome, and recognizable with 1~2 concrete objects.
+
+    Rules:
+    - No readable text, no quotes, no signage.
+    - No scary/dark content.
+    - Keep each line short (max ~12 words).
+    - Mention 1~2 objects per vignette (e.g., leash, bowl, bed, lamp, toothbrush).
+
+    Inputs:
+    - Owner actions: {actions}
+    - Worries (keep hopeful): {worries}
+    - Letter text (mood only): {letter_text}
+    Variation seed: {seed}
+    """.strip()
 
 
     def _do():
@@ -517,7 +602,6 @@ if should_generate:
                     memory_cues=memory_cues,
                     seed=st.session_state.generation_seed
                 )
-
                 img_bytes, img_err = generate_image_with_vertex_imagen(
                     imagen_prompt=img_prompt,
                     user_image_bytes=user_image_bytes,
