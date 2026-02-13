@@ -108,9 +108,15 @@ for k, v in {
     "pet_name": None,
     "last_request_key": None,
     "last_inputs": None,
+    "generation_seed": 0,  # 같은 입력이라도 seed 바꾸면 새 결과
+    "last_generation_seed": None,  # 디버그/표시용(선택)
 }.items():
     if k not in st.session_state:
         st.session_state[k] = v
+if "generation_seed" not in st.session_state:
+    st.session_state.generation_seed = 0
+if "regenerate_requested" not in st.session_state:
+    st.session_state.regenerate_requested = False
 
 # =========================================================
 # Helpers
@@ -128,11 +134,12 @@ class PetInputs:
 def _safe_strip(x: Optional[str]) -> str:
     return (x or "").strip()
 
-def make_request_key(inputs: PetInputs, image_bytes: bytes = b"") -> str:
+def make_request_key(inputs: PetInputs, image_bytes: bytes = b"", seed: int = 0) -> str:
     h = hashlib.sha256()
     payload = "|".join([
         inputs.name, inputs.species, inputs.personality, inputs.age,
-        inputs.actions, inputs.worries, inputs.owner_message
+        inputs.actions, inputs.worries, inputs.owner_message,
+        str(seed),  # ✅ seed 포함
     ]).encode("utf-8")
     h.update(payload)
     h.update(image_bytes)
@@ -149,7 +156,7 @@ def load_default_image_bytes(path: str) -> Optional[bytes]:
     except Exception:
         return None
 
-def build_letter_prompt(inputs: PetInputs) -> str:
+def build_letter_prompt(inputs: PetInputs, seed: int) -> str:
     personality = _safe_strip(inputs.personality) or "아직 잘 모르겠지만 사랑이 많은"
     age = _safe_strip(inputs.age) or "어린"
     actions = _safe_strip(inputs.actions) or "함께 시간을 보내 주는 것"
@@ -185,6 +192,12 @@ def build_letter_prompt(inputs: PetInputs) -> str:
 [길이 제한]
 - 전체 600자 이내(공백 포함)
 - 위 지침을 출력하지 말 것. 오직 편지 본문만 출력.
+
+[INTERNAL_VARIATION_METADATA]
+VARIATION_SEED: {seed}
+- Do NOT output this metadata.
+- Do NOT mention "seed" or "variation".
+
 """.strip()
 
 def analyze_pet_photo_to_visual_desc(user_image_bytes: bytes) -> str:
@@ -214,7 +227,7 @@ Avoid exact breed if unsure. Return only the description.
         except Exception:
             return ""
 
-def build_image_prompt(inputs: PetInputs, pet_visual_desc: str = "") -> str:
+def build_image_prompt(inputs: PetInputs, pet_visual_desc: str = "", seed: int = 0) -> str:
     personality = _safe_strip(inputs.personality) or "cute and warm"
     age = _safe_strip(inputs.age) or "young"
     species = _safe_strip(inputs.species)
@@ -232,6 +245,10 @@ carrying a letter in its mouth as if delivering it to the owner.
 Mood: warm, wholesome, cozy, friendly.
 Style: soft illustration, clean composition, gentle lighting.
 Rules: NO readable text, NO watermark, NO logo.
+
+[INTERNAL_VARIATION_METADATA]
+VARIATION_SEED: {seed}
+- Do NOT include any text in the image.
 """.strip()
 
 def reset_result_state():
@@ -308,6 +325,20 @@ def generate_image_with_vertex_imagen(
         image_error = (image_error or "") + f"\nimagen generate failed: {e}"
         return None, image_error
 
+    # 폼 제출 없이도 "다시 뽑기"로 seed만 바꿀 수 있게
+    if "regenerate_requested" not in st.session_state:
+        st.session_state.regenerate_requested = False
+
+    col_r1, col_r2 = st.columns([1, 1])
+    with col_r1:
+        if st.button("🔄 같은 입력으로 다른 편지/그림 받기", width="stretch"):
+            st.session_state.generation_seed += 1
+            st.session_state.regenerate_requested = True
+    with col_r2:
+        if st.button("🎲 랜덤으로 섞기(Seed 크게 변경)", width="stretch"):
+            st.session_state.generation_seed += random.randint(5, 30)
+            st.session_state.regenerate_requested = True
+
 # =========================================================
 # UI Inputs
 # =========================================================
@@ -339,7 +370,8 @@ with st.form("pet_form"):
 if cleared:
     reset_result_state()
 
-if submitted:
+should_generate = submitted or st.session_state.regenerate_requested
+if should_generate:
     if not _safe_strip(name):
         st.warning("이름은 꼭 넣어주세요! (나머지는 비워도 괜찮아요!)")
         st.stop()
@@ -372,9 +404,12 @@ if submitted:
         owner_message=_safe_strip(owner_message),
     )
 
-    request_key = make_request_key(inputs, user_image_bytes)
+    request_key = make_request_key(inputs, user_image_bytes, seed=st.session_state.generation_seed)
+    st.session_state.last_generation_seed = st.session_state.generation_seed
 
-    if st.session_state.last_request_key == request_key and st.session_state.letter_text:
+    if (st.session_state.last_request_key == request_key
+            and st.session_state.letter_text
+            and not st.session_state.regenerate_requested):
         st.info("이미 편지를 가져왔어요! 아래에서 확인해주세요🐾")
         st.stop()
 
@@ -387,7 +422,7 @@ if submitted:
     st.session_state.last_inputs = inputs
     st.session_state.last_request_key = request_key
 
-    letter_prompt = build_letter_prompt(inputs)
+    letter_prompt = build_letter_prompt(inputs, seed=st.session_state.generation_seed)
 
     with st.spinner(f"{inputs.name}: 편지를 작성하고 있어요! 잠시만 기다려주세요~ (시간이 조금 걸릴 수 있어요!)"):
         # 0) 기본값(항상 초기화)
@@ -407,7 +442,11 @@ if submitted:
         if user_image_bytes:
             try:
                 pet_desc = analyze_pet_photo_to_visual_desc(user_image_bytes)
-                img_prompt = build_image_prompt(st.session_state.last_inputs, pet_visual_desc=pet_desc)
+                img_prompt = build_image_prompt(
+                    st.session_state.last_inputs,
+                    pet_visual_desc=pet_desc,
+                    seed=st.session_state.generation_seed
+                )
 
                 img_bytes, img_err = generate_image_with_vertex_imagen(
                     imagen_prompt=img_prompt,
@@ -426,6 +465,7 @@ if submitted:
 
         # 3) 결과 준비 완료(편지라도 있으면 ready)
         st.session_state.ready = True
+        st.session_state.regenerate_requested = False
 
 # =========================================================
 # Results
@@ -433,6 +473,18 @@ if submitted:
 if st.session_state.ready:
     pet_name = st.session_state.pet_name or "반려동물"
     st.subheader("📮 반려동물이 편지를 가져왔어요!")
+    col_r1, col_r2 = st.columns([1, 1])
+    with col_r1:
+        if st.button("🔄 지금과 비슷한 이미지와 편지로 다시 만들고 싶어요.", width="stretch"):
+            st.session_state.generation_seed += 1
+            st.session_state.regenerate_requested = True
+            st.rerun()
+
+    with col_r2:
+        if st.button("🎲 느낌이 아예 다른 이미지와 편지를 받아보고 싶어요!", width="stretch"):
+            st.session_state.generation_seed += random.randint(5, 30)
+            st.session_state.regenerate_requested = True
+            st.rerun()
 
     # 1) 이미지 표시
     if st.session_state.generated_image_bytes:
