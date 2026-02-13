@@ -227,29 +227,56 @@ Avoid exact breed if unsure. Return only the description.
         except Exception:
             return ""
 
-def build_image_prompt(inputs: PetInputs, pet_visual_desc: str = "", seed: int = 0) -> str:
-    personality = _safe_strip(inputs.personality) or "cute and warm"
-    age = _safe_strip(inputs.age) or "young"
+def build_image_prompt(
+    inputs: PetInputs,
+    pet_visual_desc: str = "",
+    memory_cues: str = "",
+    seed: int = 0
+) -> str:
     species = _safe_strip(inputs.species)
-
     visual = pet_visual_desc.strip()
     visual_line = f"Pet appearance reference: {visual}\n" if visual else ""
     species_hint = f'The pet is a "{species}".' if species else "The pet is a household pet."
 
+    memory = (memory_cues or "").strip()
+    memory_block = ""
+    if memory:
+        memory_block = f"""
+Background (memory layer):
+Behind the pet, blend soft, semi-transparent watercolor-like memory fragments into ONE unified background atmosphere.
+These are subtle recollections, not separate scenes.
+{memory}
+
+Hard rules:
+- Do NOT create multiple panels, frames, or distinct scenes.
+- Do NOT add readable text anywhere.
+""".strip()
+
     return f"""
-Create a single cute illustration (not photorealistic).
+Create a single warm illustration.
 {species_hint}
 {visual_line}
-Scene: The pet "{inputs.name}" is a mail carrier wearing a tiny postman uniform and hat,
-carrying a letter in its mouth as if delivering it to the owner.
-Mood: warm, wholesome, cozy, friendly.
-Style: soft illustration, clean composition, gentle lighting.
-Rules: NO readable text, NO watermark, NO logo.
 
-[INTERNAL_VARIATION_METADATA]
-VARIATION_SEED: {seed}
-- Do NOT include any text in the image.
+Scene:
+The pet "{inputs.name}" is a mail carrier,
+wearing a tiny postman uniform and hat,
+carrying a letter in its mouth as if delivering it to the owner.
+
+{memory_block}
+
+Mood: warm, wholesome, cozy, friendly, reassuring.
+Style:
+hand-painted watercolor illustration,
+storybook / children's book style,
+warm pastel color palette,
+soft brush strokes and gentle textures,
+clean white or very light background,
+soft outlines, no harsh ink lines.
+Lighting: soft natural light, gentle shadows.
+Rules: NO readable text, NO watermark, NO logo.
+Variation seed: {seed}
 """.strip()
+
 
 def reset_result_state():
     st.session_state.generated_image_bytes = None
@@ -260,6 +287,51 @@ def reset_result_state():
     st.session_state.last_inputs = None
     st.session_state.last_request_key = None
     st.session_state.user_image_bytes = b""
+
+def build_memory_triptych(inputs: PetInputs, letter_text: str, seed: int = 0) -> str:
+    """
+    Imagen background에 넣을 '추억 3장면'을 영어로 3줄로 생성.
+    - actions 기반 1줄
+    - worries 기반 1줄 (어둡지 않게)
+    - letter 분위기/핵심 감정 기반 1줄
+    """
+    actions = _safe_strip(inputs.actions)
+    worries = _safe_strip(inputs.worries)
+    letter_text = (letter_text or "").strip()
+
+    prompt = f"""
+You create background memory cues for a single illustration.
+Return EXACTLY 3 bullet lines in English (start each line with "- ").
+Rules:
+- No readable text, no quotes, no signage.
+- Memory cues must be subtle, symbolic, watercolor-like, not literal scenes.
+- Keep them warm and hopeful (no dark, scary, distressing).
+- Do NOT make multiple panels; these will be blended into ONE background.
+Inputs:
+- Owner actions: {actions}
+- Worries: {worries}
+- Letter text (for mood only): {letter_text}
+Variation seed: {seed}
+""".strip()
+
+
+    def _do():
+        resp = client.models.generate_content(model=VISION_MODEL, contents=prompt)
+        text = (resp.text or "").strip()
+
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        bullets = [ln for ln in lines if ln.startswith("- ")]
+        if len(bullets) >= 3:
+            return "\n".join(bullets[:3])
+        # fallback: 그냥 앞 3줄을 - 로 붙여서라도 반환
+        return "\n".join([f"- {ln.lstrip('- ').strip()}" for ln in lines[:3]])
+
+    sem = get_api_semaphore()
+    with sem:
+        try:
+            return call_with_backoff(_do, max_tries=3, base=1.0)
+        except Exception:
+            return ""
 
 # =========================================================
 # API calls
@@ -324,20 +396,6 @@ def generate_image_with_vertex_imagen(
     except Exception as e:
         image_error = (image_error or "") + f"\nimagen generate failed: {e}"
         return None, image_error
-
-    # 폼 제출 없이도 "다시 뽑기"로 seed만 바꿀 수 있게
-    if "regenerate_requested" not in st.session_state:
-        st.session_state.regenerate_requested = False
-
-    col_r1, col_r2 = st.columns([1, 1])
-    with col_r1:
-        if st.button("🔄 같은 입력으로 다른 편지/그림 받기", width="stretch"):
-            st.session_state.generation_seed += 1
-            st.session_state.regenerate_requested = True
-    with col_r2:
-        if st.button("🎲 랜덤으로 섞기(Seed 크게 변경)", width="stretch"):
-            st.session_state.generation_seed += random.randint(5, 30)
-            st.session_state.regenerate_requested = True
 
 # =========================================================
 # UI Inputs
@@ -429,14 +487,25 @@ if should_generate:
         st.session_state.generated_image_bytes = None
         st.session_state.image_error = None
         st.session_state.ready = False
+        memory_cues = ""
 
         # 1) 편지 생성(여기서 실패하면 전체 중단)
         try:
             letter_text = generate_letter_text(letter_prompt)
             st.session_state.letter_text = clamp_text(letter_text, 600)
         except Exception:
-            st.warning("지금 동물 친구들이 바빠서 편지를 가져오지 못했어요🥲 10~30초 후에 다시 눌러주세요!")
+            st.warning("...편지 실패...")
             st.stop()
+
+        # 1.5) 메모리 큐(실패해도 계속)
+        try:
+            memory_cues = build_memory_triptych(
+                inputs=st.session_state.last_inputs,
+                letter_text=st.session_state.letter_text,
+                seed=st.session_state.generation_seed
+            )
+        except Exception:
+            memory_cues = ""
 
         # 2) 이미지 생성(실패해도 편지는 유지)
         if user_image_bytes:
@@ -445,6 +514,7 @@ if should_generate:
                 img_prompt = build_image_prompt(
                     st.session_state.last_inputs,
                     pet_visual_desc=pet_desc,
+                    memory_cues=memory_cues,
                     seed=st.session_state.generation_seed
                 )
 
@@ -459,7 +529,6 @@ if should_generate:
                 if img_bytes is None and not img_err:
                     st.session_state.image_error = "image generation returned no image (unknown reason)"
             except Exception as e:
-                # 이미지 쪽만 실패해도 UX는 계속
                 st.session_state.generated_image_bytes = None
                 st.session_state.image_error = f"auto image generation failed: {e}"
 
